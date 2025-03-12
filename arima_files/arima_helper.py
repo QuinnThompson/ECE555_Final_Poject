@@ -1,0 +1,1 @@
+_FORECAST_DAYS = 30
