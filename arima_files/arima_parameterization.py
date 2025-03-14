@@ -11,37 +11,63 @@ from sklearn.metrics import root_mean_squared_error
 from dataclasses import dataclass
 from arima_files.arima_helper import _FORECAST_DAYS
 
-_VISIBLE_EXTRA = 7
+_VISIBLE_EXTRA = 1
 
 @dataclass
 class HyperParameters():
+    """The simplistic parameters for ARIMA.
+    """
     autoregressive_terms: int
     nonseasonal_differences: int
     lagged_forecast_errors: int
     
 @dataclass
 class SHyperParameters():
+    """The Seasonal parameters that control how SARIMAX functions.
+    """
     autoregressive_terms: int
     nonseasonal_differences: int
     lagged_forecast_errors: int
     series_length: int
+    seasonal_autoregressive_terms: int
+    seasonal_nonseasonal_differences: int
+    seasonal_lagged_forecast_errors: int
     
-def further_forecast(training_data: pd.Series, validation_data: pd.Series, hyperparameters: Union[HyperParameters, SHyperParameters], show_charts: bool) -> None:
+def further_forecast(
+    training_data: pd.Series, 
+    validation_data: pd.Series, 
+    hyperparameters: Union[HyperParameters, SHyperParameters], 
+    show_charts: bool
+    ) -> None:
+    """A forceful method to ensure that ARIMA is inclusive of previously forecasted info.
+
+    Args:
+        training_data: The data to train on for ARIMA.
+        validation_data: The data used to gauge how well ARIMA performed.
+        hyperparameters: The parameters used to 
+        show_charts: _description_
+    """
     training_data_copy = training_data.copy()
     validation_data_copy = validation_data.copy()
     new_values = pd.Series()
     for _ in range(_FORECAST_DAYS):
-        new_values = pd.concat([new_values, model_list(pd.concat([training_data_copy, new_values]), validation_data_copy, hyperparameters, show_charts)])
+        new_values = pd.concat([new_values, model_list(pd.concat([training_data_copy, new_values]), hyperparameters)])
         validation_data_copy = validation_data_copy.drop(validation_data_copy.index[0])
     
-    additive_callback = partial(display_forecast, additional_series = new_values)
     if show_charts:
+        additive_callback = partial(display_forecast, additional_series = new_values)
         display_data(training_data, None)
         display_data(validation_data[:_FORECAST_DAYS+_VISIBLE_EXTRA], additive_callback)
     
     return new_values
 
-def model_list(training_data: pd.Series, validation_data: pd.Series, hyperparameters: Union[HyperParameters, SHyperParameters], show_charts: bool) -> None:
+def model_list(
+    training_data: pd.Series, 
+    hyperparameters: Union[HyperParameters, SHyperParameters], 
+    validation_data: Optional[pd.Series] = None, 
+    exogenous_data: Optional[pd.Series] = None, 
+    exogenous_forecast: Optional[pd.Series] = None
+) -> None:
     """Run varying models and display their data.
 
     Args:
@@ -55,19 +81,31 @@ def model_list(training_data: pd.Series, validation_data: pd.Series, hyperparame
         hyperparameters.lagged_forecast_errors
     ) 
     try:
-        model = ARIMA(training_data, order=arima_order)
-    except AttributeError:
         sarimax_order = (
-            hyperparameters.autoregressive_terms, 
-            hyperparameters.nonseasonal_differences, 
-            hyperparameters.lagged_forecast_errors,
+            hyperparameters.seasonal_autoregressive_terms, 
+            hyperparameters.seasonal_nonseasonal_differences, 
+            hyperparameters.seasonal_lagged_forecast_errors,
             hyperparameters.series_length
         )
-        model = SARIMAX(training_data, order=arima_order, seasonal_order=sarimax_order)
-    forecast_series = define_model(model, training_data)
+        model = SARIMAX(
+            training_data, 
+            order=arima_order, 
+            seasonal_order=sarimax_order,
+            exog = exogenous_data,
+            enforce_stationarity=False,
+            enforce_invertibility=False
+        )
+    except AttributeError:
+        model = ARIMA(training_data, order=arima_order)
+
+    forecast_series = define_model(model, training_data, exogenous_forecast)
+    if validation_data is not None:
+        additive_callback = partial(display_forecast, additional_series = forecast_series)
+        display_data(training_data, None)
+        display_data(validation_data[:_FORECAST_DAYS+_VISIBLE_EXTRA], additive_callback)
     return forecast_series
 
-def define_model(model: ARIMA, input_data: pd.Series) -> pd.Series:
+def define_model(model: ARIMA, input_data: pd.Series, exogenous_forecast: Optional[pd.Series] = None) -> pd.Series:
     """Utilize a generic model to generate future values.
 
     Args:
@@ -78,10 +116,9 @@ def define_model(model: ARIMA, input_data: pd.Series) -> pd.Series:
         pd.Series: The forecasted data.
     """
     results = model.fit()
-    forecast = results.forecast()
+    forecast = results.forecast(_FORECAST_DAYS, exog=exogenous_forecast)
     print(f"BIC: {results.bic}, AIC: {results.aic}")
-    return pd.Series(forecast, index=[input_data.index[-1] + DateOffset(days=1)])
-
+    return forecast
 
 def display_data(series: pd.Series, additive_callback: Optional[Callable]) -> None:
     """Display the data using matplotlib.
